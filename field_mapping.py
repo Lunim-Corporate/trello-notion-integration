@@ -36,8 +36,6 @@ def trello_to_notion_properties(
     else:
         properties["Due Date"] = {"date": None}
 
-    # Relation properties take a list of {"id": page_id} -- a card's Project
-    # label(s) resolve to one or more Project page ids. Usually just one.
     properties["Project"] = {"relation": [{"id": pid} for pid in project_page_ids]}
 
     if sync_description:
@@ -91,3 +89,35 @@ def extract_project_page_ids(card: dict, label_id_to_name: dict, project_name_to
     upstream so mismatches surface instead of disappearing quietly."""
     label_names = [label_id_to_name[lid] for lid in card.get("idLabels", []) if lid in label_id_to_name]
     return [project_name_to_page_id[name] for name in label_names if name in project_name_to_page_id]
+
+
+def canonical_fingerprint(*, status_name, due_date, project_page_ids) -> dict:
+    """A direction-independent snapshot of an Issue's synced fields.
+
+    Both sync directions must build this from the SAME shape before calling
+    mapping_store.is_echo/mark_written. Previously, mark_written was called
+    with the raw Notion 'properties' payload (Trello->Notion direction) while
+    is_echo was called with the raw Trello 'fields' payload (Notion->Trello
+    direction) -- two structurally different dicts for the same underlying
+    state, which meant the hashes could never match and echoes were never
+    actually recognized. That let a single Trello move ping-pong back and
+    forth, which is what caused cards to appear to "revert on their own."
+    """
+    return {
+        "status": status_name,
+        "due": due_date,
+        "projects": sorted(project_page_ids) if project_page_ids else [],
+    }
+
+
+def notion_page_fingerprint(page: dict) -> dict:
+    """Same canonical fingerprint, derived directly from a raw Notion page's
+    properties (used on the Notion->Trello side, where we already have the
+    Notion-shaped data and don't need to round-trip through Trello ids)."""
+    props = page["properties"]
+    status = props.get("Status", {}).get("status")
+    status_name = status["name"] if status else None
+    date_prop = props.get("Due Date", {}).get("date")
+    due_date = date_prop["start"] if date_prop else None
+    project_ids = [r["id"] for r in props.get("Project", {}).get("relation", [])]
+    return canonical_fingerprint(status_name=status_name, due_date=due_date, project_page_ids=project_ids)

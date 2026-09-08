@@ -1,4 +1,5 @@
 import logging
+import time
 
 from flask import Flask, jsonify, request
 
@@ -7,7 +8,9 @@ import trello_client
 import notion_client_custom as notion_client
 from config import DESCRIPTION_PROPERTY_CONFIRMED
 from field_mapping import (
+    canonical_fingerprint,
     extract_project_page_ids,
+    notion_page_fingerprint,
     notion_page_to_trello_fields,
     trello_to_notion_properties,
 )
@@ -22,18 +25,31 @@ mapping_store.init_db()
 _lists_cache = {}
 _labels_cache = {}
 _projects_cache = {}
+_trello_cache_refreshed_at = 0
+_projects_cache_refreshed_at = 0
+
+# Bug fixed 9 Sep 2026: caches previously only refreshed once, when empty --
+# meaning a list/label/project added to Trello or Notion AFTER the app
+# started was invisible to it until the next dyno restart. A card moved to
+# an unrecognized list would get mishandled (its Status silently cleared
+# instead of set), which combined with a separate echo-detection bug could
+# make cards appear to move back on their own. Refreshing periodically
+# fixes this without needing a manual restart every time the board changes.
+CACHE_TTL_SECONDS = 300
 
 
 def refresh_trello_metadata():
-    global _lists_cache, _labels_cache
+    global _lists_cache, _labels_cache, _trello_cache_refreshed_at
     _lists_cache = trello_client.get_lists()
     _labels_cache = trello_client.get_labels()
+    _trello_cache_refreshed_at = time.time()
     log.info("Refreshed Trello metadata: %d lists, %d labels", len(_lists_cache), len(_labels_cache))
 
 
 def refresh_projects_metadata():
-    global _projects_cache
+    global _projects_cache, _projects_cache_refreshed_at
     _projects_cache = notion_client.get_projects()
+    _projects_cache_refreshed_at = time.time()
     log.info("Refreshed Notion Projects: %d projects", len(_projects_cache))
     missing = [name for name in _labels_cache if name not in _projects_cache]
     if missing:
@@ -43,6 +59,16 @@ def refresh_projects_metadata():
         )
 
 
+def ensure_trello_metadata_fresh():
+    if not _lists_cache or not _labels_cache or (time.time() - _trello_cache_refreshed_at) > CACHE_TTL_SECONDS:
+        refresh_trello_metadata()
+
+
+def ensure_projects_metadata_fresh():
+    if not _projects_cache or (time.time() - _projects_cache_refreshed_at) > CACHE_TTL_SECONDS:
+        refresh_projects_metadata()
+
+
 @app.route("/health")
 def health():
     return {"status": "ok"}
@@ -50,7 +76,6 @@ def health():
 
 @app.route("/trello-webhook", methods=["HEAD", "POST"])
 def trello_webhook():
-    # Trello sends a HEAD request when the webhook is first registered -- just 200 it.
     if request.method == "HEAD":
         return "", 200
 
@@ -78,9 +103,6 @@ def trello_webhook():
 def notion_webhook():
     payload = request.get_json(silent=True) or {}
 
-    # Notion's webhook verification handshake: on first setup it POSTs a
-    # verification_token you paste into the Developer portal to confirm the
-    # endpoint. Log it, don't try to process it as an event.
     if "verification_token" in payload:
         log.info("Notion webhook verification token: %s", payload["verification_token"])
         return jsonify({"received": True}), 200
@@ -103,16 +125,23 @@ def notion_webhook():
 
 
 def sync_trello_card_to_notion(card_id: str):
-    if not _lists_cache or not _labels_cache:
-        refresh_trello_metadata()
-    if not _projects_cache:
-        refresh_projects_metadata()
+    ensure_trello_metadata_fresh()
+    ensure_projects_metadata_fresh()
 
     card = trello_client.get_card(card_id)
     label_id_to_name = {v: k for k, v in _labels_cache.items()}
     list_id_to_name = {v: k for k, v in _lists_cache.items()}
 
     list_name = list_id_to_name.get(card.get("idList"))
+    if list_name is None:
+        log.warning("Unrecognized Trello list id %s -- forcing a metadata refresh and retrying", card.get("idList"))
+        refresh_trello_metadata()
+        list_id_to_name = {v: k for k, v in _lists_cache.items()}
+        list_name = list_id_to_name.get(card.get("idList"))
+        if list_name is None:
+            log.error("Still unrecognized after refresh -- list may have been deleted. Skipping sync for card %s", card_id)
+            return
+
     project_page_ids = extract_project_page_ids(card, label_id_to_name, _projects_cache)
     properties = trello_to_notion_properties(
         card,
@@ -121,7 +150,12 @@ def sync_trello_card_to_notion(card_id: str):
         sync_description=DESCRIPTION_PROPERTY_CONFIRMED,
     )
 
-    if mapping_store.is_echo(card_id, properties):
+    fingerprint = canonical_fingerprint(
+        status_name=list_name,
+        due_date=card["due"][:10] if card.get("due") else None,
+        project_page_ids=project_page_ids,
+    )
+    if mapping_store.is_echo(card_id, fingerprint):
         log.info("Skipping echo for Trello card %s", card_id)
         return
 
@@ -133,15 +167,14 @@ def sync_trello_card_to_notion(card_id: str):
         notion_page_id = created["id"]
         mapping_store.link_ids(card_id, notion_page_id)
 
-    mapping_store.mark_written(notion_page_id, properties)
+    mapping_store.mark_written(card_id, fingerprint)
+    mapping_store.mark_written(notion_page_id, fingerprint)
     log.info("Synced Trello card %s -> Notion page %s", card_id, notion_page_id)
 
 
 def sync_notion_page_to_trello(page_id: str):
-    if not _lists_cache or not _labels_cache:
-        refresh_trello_metadata()
-    if not _projects_cache:
-        refresh_projects_metadata()
+    ensure_trello_metadata_fresh()
+    ensure_projects_metadata_fresh()
 
     page = notion_client.get_page(page_id)
     project_page_id_to_label_id = {
@@ -154,20 +187,19 @@ def sync_notion_page_to_trello(page_id: str):
         sync_description=DESCRIPTION_PROPERTY_CONFIRMED,
     )
 
-    if mapping_store.is_echo(page_id, fields):
+    fingerprint = notion_page_fingerprint(page)
+    if mapping_store.is_echo(page_id, fingerprint):
         log.info("Skipping echo for Notion page %s", page_id)
         return
 
     trello_card_id = mapping_store.get_trello_id(page_id)
     if not trello_card_id:
-        # V1 only syncs Notion -> existing linked Trello cards. A row created
-        # directly in Notion won't auto-create a Trello card until this is
-        # extended -- see README "Known limitations".
         log.warning("No linked Trello card for Notion page %s yet -- skipping", page_id)
         return
 
     trello_client.update_card(trello_card_id, **fields)
-    mapping_store.mark_written(trello_card_id, fields)
+    mapping_store.mark_written(page_id, fingerprint)
+    mapping_store.mark_written(trello_card_id, fingerprint)
     log.info("Synced Notion page %s -> Trello card %s", page_id, trello_card_id)
 
 

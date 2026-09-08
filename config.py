@@ -41,4 +41,5 @@ TRELLO_MEMBER_TO_NOTION_USER = {
 # bouncing back and forth forever.
 SYNC_ECHO_WINDOW_SECONDS = 10
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
 DATABASE_PATH = os.environ.get("MAPPING_DB_PATH", "mapping.db")

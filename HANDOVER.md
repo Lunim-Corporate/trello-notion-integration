@@ -14,27 +14,26 @@ This is a small, self-hosted, custom-built application that keeps a Trello board
 - Move a card between lists in Trello → the matching Notion Issue's Status updates automatically
 - Change an Issue's Status in Notion → the matching Trello card moves lists automatically
 - Change a card's Project label in Trello → the Issue's Project relation in Notion updates to point at the right project
+- Create a card in Trello → a matching new Issue appears in Notion automatically
+- **Create a brand-new row in Notion → a matching new card appears in Trello automatically** (added 9 Sep 2026, see 2.6 below — this direction only fires for genuinely new pages, never for edits to old pre-existing Issues)
 - Runs continuously on its own, hosted on Heroku — no laptop, no manual triggering, no ongoing involvement needed from anyone once it's running
 
-**Current status:** deployed, live, and both sync directions have been manually tested and confirmed working against the real Issues/Projects databases (not a sandbox).
+**Current status:** deployed, live, and all sync paths (both status/field updates in both directions, plus creation in both directions) have been manually tested and confirmed working against the real Issues/Projects databases (not a sandbox).
 
 **Immediate next step for whoever inherits this:** read Section 3 below — the Trello board this currently syncs with is tied to my personal Trello account, and that needs to change before I leave. This is the single most important thing in this document.
 
 ### Recommended workflow (read this first — it's the practical summary of everything below)
 
-**Always create new work items in Trello, not Notion.** Once a card exists in Trello and has synced over, editing it from *either side* works fine going forward. But creation only flows one direction:
+**Creating a new work item works from either side now.** Create a card in Trello, or create a new row in Notion — either way, a matching item appears on the other side and the pairing is remembered from then on. Editing an already-linked item also works from either side.
 
-- ✅ **Create a card in Trello** → automatically appears as a new Issue in Notion → from that point on, editing Status/Due Date/Project works from either side
-- ❌ **Create a new row directly in Notion** → does *not* create a Trello card. The app receives the event, finds no linked card, and does nothing (logs `"No linked Trello card ... -- skipping"`)
-- ❌ **Edit a pre-existing Notion Issue** (one that existed before this tool went live) → also does nothing on the Trello side, for the same reason — it was never linked to a card in the first place
-
-In short: **Trello is the source of truth for creating new work; Notion is where you can edit either new or already-linked items.**
+**All Issues that existed before 9 September 2026 are now linked too** — see the backfill note in Section 4. This used to be the biggest limitation of this tool; it no longer is. Editing an old Issue now syncs correctly, same as any other.
 
 ### Known limitations (read before relying on this for anything important)
 
-- **Notion → Trello card creation is not built yet.** This is the single biggest gap and the clearest "next step" for whoever picks this up. The `page.created` webhook already fires correctly and reaches the app — the missing piece is purely the logic to create a new Trello card when a page arrives with no existing link, plus writing that new pairing into the mapping table. Everything else needed (the Notion→Trello field-translation logic, the Trello API client, the mapping store) already exists and would mostly be reused; this is a meaningfully smaller task than the original build.
-- **It does not match existing items by name.** If a new Trello card is created with the same name as an already-existing Notion Issue, the tool has no way of recognizing them as "the same thing" — it will create a **brand new, separate** Notion page, not link to the existing one. Matching only happens for pairs the tool itself created. This means **all the Notion Issues that existed before this tool went live are permanently unlinked** unless someone manually links them (which the tool has no feature for).
-- **Assignee and Description are not synced.** These properties exist in the real schema (`Owner` for assignee, type `people`) but syncing them was never built — flagged as a possible next feature, not a bug.
+- **The live app's Notion→Trello direction does not check for an existing Trello card by name before creating one.** This is a real, currently-unfixed gap, discovered while building the backfill script below: if a brand-new Notion Issue is created with the *exact same title* as a card that already exists on the Trello board for some other reason, the app will create a genuine duplicate rather than linking to the existing one. The backfill script (Section 4) *does* have this protection — it was deliberately built into that one-off script, but never carried over into the always-running app itself. Worth porting that same name-matching check into `sync_notion_page_to_trello`'s creation path — estimated ~30-45 minutes, since the logic and its tests already exist in `backfill_existing_issues.py` as a reference.
+- **Deleting/archiving a card or Issue on one side does not delete/archive it on the other.** Neither webhook handler currently listens for delete events at all — this simply hasn't been built yet. Estimated ~2-3 hours for both directions, plus one real decision to make first: should a delete on one side *archive* the other (safer, reversible) or *permanently delete* it (matches intent more literally, but destructive)? Archiving is the safer default recommendation.
+- **Card/Issue order (position within a list or view) is not synced.** Reordering cards within a Trello list, or reordering rows in a Notion view, doesn't carry over to the other side. Worth flagging honestly: this may not just be unbuilt, it may not be *possible* — manual card order within a Notion board view doesn't appear to be exposed through Notion's public API the way properties are. This needs investigation before anyone estimates a build time for it, rather than assuming it's straightforward.
+- **Assignee and Description are not synced.** These properties exist in the real schema (`Owner` for assignee, type `people`) but syncing them was never built — estimated ~2-2.5 hours combined, flagged as a possible next feature, not a bug.
 - **This tool never writes to the Projects database** — only reads it, to resolve which Project a label refers to.
 
 ---
@@ -61,10 +60,13 @@ Both directions write through to the other platform's API, with a Postgres-backe
 | `mapping_store.py` | The ID-mapping and loop-prevention database layer. Uses Postgres on Heroku (SQLite locally) — see Section 5 for why this distinction matters |
 | `resolve_data_sources.py` | One-time helper to find a Notion database's real `data_source_id` from its URL. Kept for reference / future re-use |
 | `register_trello_webhook.py` | One-time helper to register the Trello webhook against a deployed URL |
+| `backfill_existing_issues.py` | One-off script (already run successfully) that links/creates Trello cards for Issues that predate this tool. Dry-run by default; see Section 4 |
 | `Procfile` | Tells Heroku how to start the app (`gunicorn app:app`) |
 | `.python-version` | Pins Python to 3.12 — required for `psycopg2-binary` to install correctly (see Section 5) |
 | `requirements.txt` | Python dependencies |
 | `test_field_mapping.py` | Unit tests for the translation logic — run with `python3 -m unittest test_field_mapping -v` |
+| `test_app_sync.py` | Tests for the Notion→Trello card-creation safety gate (6 tests) |
+| `test_backfill.py` | Tests for the backfill script, including the duplicate-linking behavior (7 tests) |
 | `.env` (not in git) | The actual credentials — never committed, see `.gitignore` |
 
 ### 2.3 What actually gets synced
@@ -97,6 +99,12 @@ DATABASE_URL          (auto-set by Heroku's Postgres add-on, don't set manually)
 ```
 
 To view or change these on the live app: `heroku config -a notion-trello-integration`
+
+### 2.6 How Notion → Trello card creation stays safe (added 9 Sep 2026)
+
+A new Notion Issue only ever creates a Trello card when the incoming webhook event is specifically `page.created` — not merely "this page has no linked card yet." That distinction is the entire safety mechanism: every one of the ~70 pre-existing Issues also has no linked card, and without this check, editing any of them would have silently spawned a duplicate Trello card the first time anyone touched it.
+
+If a page has no Status set yet, the new card defaults to the `Backlog` list (configurable). This behavior has 6 dedicated tests (`test_app_sync.py`) proving the safety gate specifically — including a test that directly simulates editing an old, unlinked page and confirms nothing gets created.
 
 ---
 
@@ -135,9 +143,9 @@ If preferred instead of migrating the existing one:
 
 ---
 
-## 4. Bugs found and fixed after initial launch (9 Sep 2026)
+## 4. Changes made after initial launch (9 Sep 2026)
 
-Three real bugs surfaced during real-world use after the initial deployment, all now fixed and confirmed working in production. Documented here because they're exactly the kind of thing that's easy to reintroduce accidentally if this code gets modified later without knowing why it's written the way it is.
+Three real bugs surfaced during real-world use after the initial deployment, plus one new feature was added the same day. All documented here because they're exactly the kind of thing that's easy to reintroduce accidentally, or assume doesn't exist, if this code gets modified later without this context.
 
 **Bug 1 — stale metadata cache.** The app originally only fetched Trello's lists/labels and Notion's projects *once*, when it first started up, and never refreshed them again. When an "On Hold" list was added to the Trello board after the app was already running, the app had no idea it existed — any card moved there got mishandled (its Notion Status was silently cleared instead of set to "On Hold"). **Fix:** the cache now refreshes automatically every 5 minutes, and also force-refreshes immediately if it ever encounters an unrecognized list ID, rather than waiting for the next scheduled refresh.
 
@@ -145,7 +153,13 @@ Three real bugs surfaced during real-world use after the initial deployment, all
 
 **Bug 3 — trailing whitespace breaking Project matching.** Three real Notion projects ("Trello & Notion," "Maya Poetry Awards Campaign," "Psychological Profiling") had invisible trailing spaces in their titles, which silently broke the exact-string match against the (correctly clean) Trello label names — those three cards' Project relation just never got set, with only a log warning to show for it. **Fix:** both the Trello label name and the Notion project name are now whitespace-stripped before comparing, so this entire class of typo can't cause a silent failure again.
 
-All three fixes have accompanying unit tests (`test_field_mapping.py`, `TestCanonicalFingerprint` and the whitespace test in `TestExtractProjectPageIds`) proving the specific failure mode is actually fixed, not just patched by inspection.
+**Feature — Notion → Trello card creation.** Originally shipped as read/update-only in that direction (see Section 2.6 above for how the safety gate works, and the "Recommended workflow" note at the top of this document for what this changes day-to-day).
+
+**Feature — backfilling all pre-existing Notion Issues (`backfill_existing_issues.py`).** A one-off script that gives every Issue that predates this tool a linked Trello card, run successfully on 9 Sep 2026: 87 total Issues found, 78 new cards created, 9 linked to already-existing cards, 0 errors. Runs as a **dry run by default** (prints exactly what it would do, changes nothing) and only executes for real with an explicit `--live` flag — deliberate, given it creates real objects on a shared team board. Safe to re-run at any time; already-linked Issues are automatically skipped.
+
+**Near-miss caught by the dry run, worth knowing about:** the first dry-run pass showed several old Issues about to get **duplicate** Trello cards — cards with the exact same titles already existed on the board (created manually during earlier testing that same day, before this script existed). The script was extended with a name-matching check against every existing open Trello card before creating anything: an exact title match gets **linked** to the existing card instead of duplicated. This caught 9 real near-duplicates. **This same protection was NOT carried over into the live, always-running app** — see "Known limitations" at the top of this document, since that's a real residual gap worth closing.
+
+All three bug fixes have accompanying unit tests (`test_field_mapping.py`, `TestCanonicalFingerprint` and the whitespace test in `TestExtractProjectPageIds`) proving the specific failure mode is actually fixed, not just patched by inspection. The card-creation feature has its own dedicated test file (`test_app_sync.py`, 6 tests) proving the safety gate specifically, and the backfill script has `test_backfill.py` (7 tests) proving dry-run safety, error resilience, and the duplicate-linking behavior specifically. All test files combined: 29 tests, all passing.
 
 ## 5. Non-obvious moments and nuances (learned the hard way — read this before debugging anything)
 

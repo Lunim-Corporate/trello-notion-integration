@@ -29,6 +29,18 @@ def get_labels() -> dict:
     return {lbl["name"]: lbl["id"] for lbl in resp.json() if lbl["name"]}
 
 
+def get_all_cards() -> dict:
+    """Returns {card_name: card_id} for every open card on the board.
+    Last-wins if two cards genuinely share a name -- a rare enough edge
+    case that this is a documented limitation, not a bug, for this use."""
+    resp = requests.get(
+        f"{BASE_URL}/boards/{TRELLO_BOARD_ID}/cards",
+        params=_auth_params({"fields": "name"}),
+    )
+    resp.raise_for_status()
+    return {c["name"]: c["id"] for c in resp.json()}
+
+
 def get_card(card_id: str) -> dict:
     resp = requests.get(
         f"{BASE_URL}/cards/{card_id}",

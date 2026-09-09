@@ -51,7 +51,7 @@ def refresh_projects_metadata():
     _projects_cache = notion_client.get_projects()
     _projects_cache_refreshed_at = time.time()
     log.info("Refreshed Notion Projects: %d projects", len(_projects_cache))
-    missing = [name for name in _labels_cache if name not in _projects_cache]
+    missing = [name for name in _labels_cache if name.strip() not in _projects_cache]
     if missing:
         log.warning(
             "%d Trello Project label(s) have no matching Notion Project row: %s",

@@ -114,6 +114,13 @@ class TestExtractProjectPageIds(unittest.TestCase):
         result = extract_project_page_ids({"idLabels": []}, {}, {})
         self.assertEqual(result, [])
 
+    def test_trailing_whitespace_on_label_does_not_break_match(self):
+        card = {"idLabels": ["l1"]}
+        label_id_to_name = {"l1": "Psychological Profiling  "}
+        project_name_to_page_id = {"Psychological Profiling": "page-xyz"}
+        result = extract_project_page_ids(card, label_id_to_name, project_name_to_page_id)
+        self.assertEqual(result, ["page-xyz"])
+
 
 class TestCanonicalFingerprint(unittest.TestCase):
     """Regression tests for the 9 Sep 2026 echo-detection bug: mark_written and

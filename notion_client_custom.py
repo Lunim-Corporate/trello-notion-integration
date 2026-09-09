@@ -30,12 +30,18 @@ def query_data_source(data_source_id: str, filter_: dict = None) -> list:
 def get_projects() -> dict:
     """Returns {project_name: page_id} for every row in the Projects
     database. Used to resolve Trello Project labels to the real Notion
-    relation target, since Issues.Project is a relation, not a select."""
+    relation target, since Issues.Project is a relation, not a select.
+
+    Names are stripped of leading/trailing whitespace -- a trailing space in
+    a Notion title is invisible in the UI but breaks an exact-string match
+    against a Trello label name that doesn't have one (discovered 9 Sep
+    2026: "Psychological Profiling " with a trailing space silently failed
+    to match the clean "Psychological Profiling" Trello label)."""
     results = query_data_source(NOTION_PROJECTS_DATA_SOURCE_ID)
     projects = {}
     for page in results:
         title = page["properties"].get("Project", {}).get("title", [])
-        name = "".join(t["plain_text"] for t in title) if title else None
+        name = "".join(t["plain_text"] for t in title).strip() if title else None
         if name:
             projects[name] = page["id"]
     return projects

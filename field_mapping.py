@@ -86,8 +86,13 @@ def extract_project_page_ids(card: dict, label_id_to_name: dict, project_name_to
     """Trello card's Project labels -> matching Notion Project page ids.
     A label with no matching Notion project (name mismatch, or project not
     yet created in Notion) is silently skipped -- callers should log this
-    upstream so mismatches surface instead of disappearing quietly."""
-    label_names = [label_id_to_name[lid] for lid in card.get("idLabels", []) if lid in label_id_to_name]
+    upstream so mismatches surface instead of disappearing quietly.
+
+    Both sides are whitespace-stripped before matching -- a trailing space
+    on either a Trello label or a Notion project title is invisible in
+    either UI but breaks an exact-string match otherwise (see
+    notion_client_custom.get_projects for the incident that surfaced this)."""
+    label_names = [label_id_to_name[lid].strip() for lid in card.get("idLabels", []) if lid in label_id_to_name]
     return [project_name_to_page_id[name] for name in label_names if name in project_name_to_page_id]
 
 

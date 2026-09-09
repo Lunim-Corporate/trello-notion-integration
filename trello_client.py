@@ -56,6 +56,22 @@ def update_card(card_id: str, *, name=None, desc=None, due=None, id_list=None, i
     return resp.json()
 
 
+def create_card(*, id_list: str, name: str, desc: str = None, due: str = None, id_labels: list = None) -> dict:
+    """Creates a new Trello card. id_list is required -- Trello's API
+    rejects card creation without a destination list."""
+    payload = {"idList": id_list, "name": name}
+    if desc:
+        payload["desc"] = desc
+    if due:
+        payload["due"] = due
+    if id_labels:
+        payload["idLabels"] = ",".join(id_labels)
+
+    resp = requests.post(f"{BASE_URL}/cards", params=_auth_params(payload))
+    resp.raise_for_status()
+    return resp.json()
+
+
 def register_webhook(callback_url: str, description: str = "Notion sync") -> dict:
     resp = requests.post(
         f"{BASE_URL}/webhooks",

@@ -18,9 +18,13 @@ NOTION_API_VERSION = "2026-03-11"
 NOTION_ISSUES_DATA_SOURCE_ID = os.environ["NOTION_ISSUES_DATA_SOURCE_ID"]
 NOTION_PROJECTS_DATA_SOURCE_ID = os.environ["NOTION_PROJECTS_DATA_SOURCE_ID"]
 
-# Confirmed from the real Issues database (screenshots, 2 Sep 2026). If Lunim
-# adds/renames a status, this needs updating to match exactly.
-STATUS_NAMES = ["Backlog", "On Deck", "In Progress", "In Review", "Done", "Archived"]
+# Confirmed from the real Issues database and Trello board (2-9 Sep 2026).
+# If Lunim adds/renames a status, this needs updating to match exactly.
+STATUS_NAMES = ["Backlog", "On Deck", "In Progress", "In Review", "On Hold", "Done", "Archived"]
+
+# Which Trello list a brand-new card lands in when a new Notion Issue is
+# created without a Status set yet. Must be one of the names in STATUS_NAMES.
+DEFAULT_LIST_NAME = "Backlog"
 
 # NOT YET CONFIRMED against the real schema -- the Table view screenshots we
 # had didn't show an Assignee or Description column (they may exist further

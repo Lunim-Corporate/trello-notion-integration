@@ -6,7 +6,7 @@ from flask import Flask, jsonify, request
 import mapping_store
 import trello_client
 import notion_client_custom as notion_client
-from config import DESCRIPTION_PROPERTY_CONFIRMED
+from config import DEFAULT_LIST_NAME, DESCRIPTION_PROPERTY_CONFIRMED
 from field_mapping import (
     canonical_fingerprint,
     extract_project_page_ids,
@@ -116,7 +116,7 @@ def notion_webhook():
         return jsonify({"skipped": "no page id"}), 200
 
     try:
-        sync_notion_page_to_trello(page_id)
+        sync_notion_page_to_trello(page_id, event_type=event_type)
     except Exception:
         log.exception("Failed syncing Notion page %s to Trello", page_id)
         return jsonify({"error": "sync failed"}), 500
@@ -172,7 +172,7 @@ def sync_trello_card_to_notion(card_id: str):
     log.info("Synced Trello card %s -> Notion page %s", card_id, notion_page_id)
 
 
-def sync_notion_page_to_trello(page_id: str):
+def sync_notion_page_to_trello(page_id: str, *, event_type: str = None):
     ensure_trello_metadata_fresh()
     ensure_projects_metadata_fresh()
 
@@ -193,8 +193,40 @@ def sync_notion_page_to_trello(page_id: str):
         return
 
     trello_card_id = mapping_store.get_trello_id(page_id)
+
     if not trello_card_id:
-        log.warning("No linked Trello card for Notion page %s yet -- skipping", page_id)
+        # Safety gate: only CREATE a Trello card for a genuinely new page
+        # (event_type == "page.created"). An unlinked page seen via
+        # page.properties_updated is almost always one of the ~70 Issues
+        # that existed before this tool went live -- editing those must
+        # keep doing nothing, not silently spawn a duplicate Trello card
+        # the first time anyone touches them. This distinction is the
+        # entire point of checking event_type here rather than just
+        # "is there a link yet."
+        if event_type != "page.created":
+            log.warning("No linked Trello card for Notion page %s yet -- skipping", page_id)
+            return
+
+        id_list = fields.get("id_list") or _lists_cache.get(DEFAULT_LIST_NAME)
+        if not id_list:
+            log.error(
+                "Cannot create Trello card for new Notion page %s -- no Status set and "
+                "DEFAULT_LIST_NAME (%r) not found on the board", page_id, DEFAULT_LIST_NAME,
+            )
+            return
+
+        created = trello_client.create_card(
+            id_list=id_list,
+            name=fields["name"],
+            desc=fields.get("desc"),
+            due=fields.get("due"),
+            id_labels=fields.get("id_labels"),
+        )
+        trello_card_id = created["id"]
+        mapping_store.link_ids(trello_card_id, page_id)
+        mapping_store.mark_written(page_id, fingerprint)
+        mapping_store.mark_written(trello_card_id, fingerprint)
+        log.info("Created new Trello card %s from Notion page %s", trello_card_id, page_id)
         return
 
     trello_client.update_card(trello_card_id, **fields)

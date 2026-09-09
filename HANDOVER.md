@@ -106,6 +106,46 @@ A new Notion Issue only ever creates a Trello card when the incoming webhook eve
 
 If a page has no Status set yet, the new card defaults to the `Backlog` list (configurable). This behavior has 6 dedicated tests (`test_app_sync.py`) proving the safety gate specifically — including a test that directly simulates editing an old, unlinked page and confirms nothing gets created.
 
+### 2.7 How to check the app is actually working (read this if something seems wrong)
+
+**Is it running at all?**
+```
+heroku ps -a notion-trello-integration
+```
+Should show `web.1: up`. If it shows "No dynos," run `heroku ps:scale web=1 -a notion-trello-integration`.
+
+**Is it responding?** Open `https://notion-trello-integration-ce5ba8e788f7.herokuapp.com/health` in a browser — should show `{"status":"ok"}`.
+
+**Watch what it's doing in real time:**
+```
+heroku logs --tail -a notion-trello-integration
+```
+Leave this running, then move a card in Trello or edit an Issue in Notion and watch for a matching line. Press Ctrl+C to stop watching.
+
+**What a successful sync looks like:**
+```
+INFO:sync:Synced Trello card <id> -> Notion page <id>
+INFO:sync:Synced Notion page <id> -> Trello card <id>
+INFO:sync:Created new Trello card <id> from Notion page <id>
+```
+
+**Lines that look alarming but are actually normal, expected behavior:**
+```
+INFO:sync:Skipping echo for Trello card <id>       <- loop-prevention working correctly
+INFO:sync:Skipping echo for Notion page <id>        <- same, other direction
+WARNING:sync:No linked Trello card for Notion page <id> yet -- skipping
+```
+That last one is expected if someone edits a Notion page that was created directly in Notion but hasn't been through a full sync yet, or in the rare case the backfill script (Section 4) somehow missed something. It is only a real problem if it appears for something that should already be linked.
+
+**What an actual problem looks like:**
+```
+ERROR:sync:Failed syncing Trello card <id> to Notion
+<a Python traceback follows>
+```
+If you see this, copy the full traceback — that's what's needed to diagnose it. Common historical causes are catalogued in Section 5 below.
+
+**A change isn't showing up yet — before assuming it's broken:** Notion's webhooks are aggregated/delayed by Notion itself (Section 5) — wait a minute or two and check the logs again before concluding something's wrong.
+
 ---
 
 ## 3. Trello board handover — three ways to proceed

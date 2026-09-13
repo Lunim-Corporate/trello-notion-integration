@@ -115,6 +115,20 @@ def link_ids(trello_card_id: str, notion_page_id: str):
             )
 
 
+def unlink_by_trello_id(trello_card_id: str):
+    """Removes a mapping row by its Trello card id. Used when the linked
+    Notion page turns out to be gone (deleted/archived) -- clearing the
+    stale link lets the next sync create a fresh page instead of crashing
+    repeatedly against a page that no longer exists."""
+    with get_conn() as conn:
+        _execute(
+            conn,
+            "DELETE FROM id_map WHERE trello_card_id = ?",
+            "DELETE FROM id_map WHERE trello_card_id = %s",
+            (trello_card_id,),
+        )
+
+
 def _hash_fields(fields: dict) -> str:
     return json.dumps(fields, sort_keys=True, default=str)
 

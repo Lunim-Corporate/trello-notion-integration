@@ -1,6 +1,7 @@
 import logging
 import time
 
+import requests
 from flask import Flask, jsonify, request
 
 import mapping_store
@@ -161,8 +162,25 @@ def sync_trello_card_to_notion(card_id: str):
 
     notion_page_id = mapping_store.get_notion_id(card_id)
     if notion_page_id:
-        notion_client.update_page(notion_page_id, properties)
-    else:
+        try:
+            notion_client.update_page(notion_page_id, properties)
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status is not None and 400 <= status < 500:
+                # The linked Notion page is gone -- deleted or archived.
+                # Clear the stale link and fall through to create a fresh
+                # page, rather than crashing on every retry forever.
+                log.warning(
+                    "Linked Notion page %s for card %s returned %s -- "
+                    "likely deleted/archived. Clearing stale link and creating a fresh page.",
+                    notion_page_id, card_id, status,
+                )
+                mapping_store.unlink_by_trello_id(card_id)
+                notion_page_id = None
+            else:
+                raise  # genuine server/network error -- let it propagate and retry normally
+
+    if not notion_page_id:
         created = notion_client.create_issue_page(properties)
         notion_page_id = created["id"]
         mapping_store.link_ids(card_id, notion_page_id)

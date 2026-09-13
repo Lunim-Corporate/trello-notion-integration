@@ -183,7 +183,7 @@ If preferred instead of migrating the existing one:
 
 ---
 
-## 4. Changes made after initial launch (9 Sep 2026)
+## 4. Changes made after initial launch (9-13 Sep 2026)
 
 Three real bugs surfaced during real-world use after the initial deployment, plus one new feature was added the same day. All documented here because they're exactly the kind of thing that's easy to reintroduce accidentally, or assume doesn't exist, if this code gets modified later without this context.
 
@@ -199,7 +199,9 @@ Three real bugs surfaced during real-world use after the initial deployment, plu
 
 **Near-miss caught by the dry run, worth knowing about:** the first dry-run pass showed several old Issues about to get **duplicate** Trello cards — cards with the exact same titles already existed on the board (created manually during earlier testing that same day, before this script existed). The script was extended with a name-matching check against every existing open Trello card before creating anything: an exact title match gets **linked** to the existing card instead of duplicated. This caught 9 real near-duplicates. **This same protection was NOT carried over into the live, always-running app** — see "Known limitations" at the top of this document, since that's a real residual gap worth closing.
 
-All three bug fixes have accompanying unit tests (`test_field_mapping.py`, `TestCanonicalFingerprint` and the whitespace test in `TestExtractProjectPageIds`) proving the specific failure mode is actually fixed, not just patched by inspection. The card-creation feature has its own dedicated test file (`test_app_sync.py`, 6 tests) proving the safety gate specifically, and the backfill script has `test_backfill.py` (7 tests) proving dry-run safety, error resilience, and the duplicate-linking behavior specifically. All test files combined: 29 tests, all passing.
+**Bug 4 — a deleted/archived Notion page crashed the sync forever, on every retry.** Discovered 12-13 Sep 2026, during the Trello credential handover to Pete: if a Notion Issue linked to a Trello card gets deleted or archived in Notion, the app's next attempt to update that page fails with a 4xx error from Notion. Previously this error was uncaught — it crashed the whole request, Trello retried (as it does for any 5xx response the crash produced), and every retry failed identically, forever, with no way to recover except manually clearing the stale link in the database. **Fix:** the app now catches this specific failure, clears the stale mapping automatically, and creates a fresh Notion page on the same sync — so a deleted page self-heals on the next update to that card instead of crashing indefinitely. A genuine Notion server error (5xx, an outage on their end) is deliberately *not* treated this way — it still propagates and retries normally, so this fix can't accidentally mask a real outage as "page deleted." Both behaviors are directly tested (`test_app_sync.py`, `TestTrelloToNotionSelfHealing`), including a test proving a 500 error is NOT swallowed.
+
+All bug fixes have accompanying unit tests (`test_field_mapping.py`'s `TestCanonicalFingerprint` and whitespace test, and `test_app_sync.py`'s `TestTrelloToNotionSelfHealing`) proving each specific failure mode is actually fixed, not just patched by inspection. The card-creation feature has its own dedicated tests (`test_app_sync.py`, `TestNotionToTrelloCreationGate`) proving the safety gate specifically, and the backfill script has `test_backfill.py` proving dry-run safety, error resilience, and the duplicate-linking behavior. All test files combined: 33 tests, all passing.
 
 ## 5. Non-obvious moments and nuances (learned the hard way — read this before debugging anything)
 
